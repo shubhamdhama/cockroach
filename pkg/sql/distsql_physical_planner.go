@@ -229,7 +229,7 @@ func NewDistSQLPlanner(
 func (dsp *DistSQLPlanner) GetAllInstancesByLocality(
 	ctx context.Context, filter roachpb.Locality,
 ) ([]sqlinstance.InstanceInfo, error) {
-	all, err := dsp.sqlAddressResolver.GetAllInstances(ctx)
+	all, err := dsp.GetReadyInstances(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1584,6 +1584,24 @@ func (dsp *DistSQLPlanner) checkInstanceHealth(
 	return status
 }
 
+func (dsp *DistSQLPlanner) GetReadyInstances(
+	ctx context.Context,
+) ([]sqlinstance.InstanceInfo, error) {
+	instances, err := dsp.sqlAddressResolver.GetAllInstances(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	readyInstances := make([]sqlinstance.InstanceInfo, 0, len(instances))
+	for _, n := range instances {
+		if n.IsDraining {
+			continue
+		}
+		readyInstances = append(readyInstances, n)
+	}
+	return readyInstances, nil
+}
+
 // healthySQLInstanceIDForKVNodeHostedInstanceResolver returns the SQL instance
 // ID for an instance that is hosted in the process of a KV node. Currently SQL
 // instances that run in KV node processes have IDs fixed to be equal to the KV
@@ -1596,9 +1614,9 @@ func (dsp *DistSQLPlanner) checkInstanceHealth(
 func (dsp *DistSQLPlanner) healthySQLInstanceIDForKVNodeHostedInstanceResolver(
 	ctx context.Context, planCtx *PlanningCtx,
 ) func(nodeID roachpb.NodeID) (base.SQLInstanceID, SpanPartitionReason) {
-	allInstances, err := dsp.sqlAddressResolver.GetAllInstances(ctx)
+	allInstances, err := dsp.GetReadyInstances(ctx)
 	if err != nil {
-		log.Warningf(ctx, "could not get all instances: %v", err)
+		log.Warningf(ctx, "could not instances for planning: %v", err)
 		return dsp.alwaysUseGatewayWithReason(SpanPartitionReason_GATEWAY_ON_ERROR)
 	}
 
@@ -1675,6 +1693,9 @@ func (dsp *DistSQLPlanner) filterUnhealthyInstances(
 ) (healthyInstances []sqlinstance.InstanceInfo, unhealthyInstances []sqlinstance.InstanceInfo) {
 	healthyInstances = make([]sqlinstance.InstanceInfo, 0, len(instances))
 	for _, n := range instances {
+		if n.IsDraining {
+			continue
+		}
 		if status := dsp.checkInstanceHealth(
 			n.InstanceID, n.InstanceRPCAddr, nodeStatusesCache); status == NodeOK {
 			healthyInstances = append(healthyInstances, n)
@@ -1702,11 +1723,11 @@ func (dsp *DistSQLPlanner) makeInstanceResolver(
 		return mixedProcessSameNodeResolver, nil
 	}
 
-	// GetAllInstances returns mostly healthy nodes, except those that have
-	// recently gone down and not yet been updated in the sql_instances cache. The
-	// filtering out of these nodes is deferred to the resolver using the
-	// filterUnhealthyInstances function.
-	instances, err := dsp.sqlAddressResolver.GetAllInstances(ctx)
+	// GetReadyInstances returns mostly healthy nodes, excluding those that have
+	// recently gone down and have not yet been updated in the sql_instances
+	// cache. The filtering out of these nodes is deferred to the resolver using
+	// the filterUnhealthyNodes function.
+	instances, err := dsp.GetReadyInstances(ctx)
 	if err != nil {
 		return nil, err
 	}
