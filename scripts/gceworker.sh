@@ -46,7 +46,7 @@ case "${cmd}" in
            --network "default" \
            --maintenance-policy "MIGRATE" \
            --image-project "ubuntu-os-cloud" \
-           --image-family "ubuntu-2004-lts" \
+           --image-family "ubuntu-2404-lts-amd64" \
            --boot-disk-size "250" \
            --boot-disk-type "pd-ssd" \
            --boot-disk-device-name "${NAME}" \
