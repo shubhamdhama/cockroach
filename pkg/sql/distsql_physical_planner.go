@@ -1269,11 +1269,12 @@ func (h *distSQLNodeHealth) checkSystem(
 			// This host isn't known to be healthy. Don't use it (use the gateway
 			// instead). Note: this can never happen for our sqlInstanceID (which
 			// always has its address in the nodeMap).
-			log.VEventf(ctx, 1, "marking n%d as unhealthy for this plan: %v", sqlInstanceID, err)
+			log.Infof(ctx, "marking n%d as unhealthy for this plan: %v", sqlInstanceID, err)
 			return err
 		}
 	}
 	if !h.isAvailable(sqlInstanceID) {
+		log.Infof(ctx, "not using n%d since it is not available", sqlInstanceID)
 		return pgerror.Newf(pgcode.CannotConnectNow, "not using n%d since it is not available", sqlInstanceID)
 	}
 
@@ -1558,12 +1559,14 @@ func (dsp *DistSQLPlanner) deprecatedHealthySQLInstanceIDForKVNodeIDSystem(
 		sqlInstanceID = dsp.gatewaySQLInstanceID
 		reason = SpanPartitionReason_GOSSIP_GATEWAY_TARGET_UNHEALTHY
 	}
+	log.Infof(ctx, "for nodeID: %d we are planning on instance: %d: %s", nodeID, sqlInstanceID, reason.String())
 	return sqlInstanceID, reason
 }
 
 // checkInstanceHealth returns the instance health status by dialing the node.
 // It also caches the result to avoid redialing for a query.
 func (dsp *DistSQLPlanner) checkInstanceHealth(
+	ctx context.Context,
 	instanceID base.SQLInstanceID,
 	instanceRPCAddr string,
 	nodeStatusesCache map[base.SQLInstanceID]NodeStatus,
@@ -1575,6 +1578,9 @@ func (dsp *DistSQLPlanner) checkInstanceHealth(
 	}
 	status := NodeOK
 	if err := dsp.nodeHealth.connHealthInstance(instanceID, instanceRPCAddr); err != nil {
+		if ctx != nil {
+			log.Infof(ctx, "conn health failed with error: %v", err)
+		}
 		status = NodeUnhealthy
 	}
 
@@ -1611,15 +1617,19 @@ func (dsp *DistSQLPlanner) healthySQLInstanceIDForKVNodeHostedInstanceResolver(
 		instances[n.InstanceID] = n
 	}
 
+	log.Infof(ctx, "instances before health check: %v", instances)
 	return func(nodeID roachpb.NodeID) (base.SQLInstanceID, SpanPartitionReason) {
+		log.Infof(ctx, "nodeID: %d", nodeID)
 		sqlInstance := base.SQLInstanceID(nodeID)
 		if n, ok := instances[sqlInstance]; ok {
-			if status := dsp.checkInstanceHealth(
+			if status := dsp.checkInstanceHealth(ctx,
 				sqlInstance, n.InstanceRPCAddr, planCtx.nodeStatuses); status == NodeOK {
+				log.Infof(ctx, "target healthy")
 				return sqlInstance, SpanPartitionReason_TARGET_HEALTHY
 			}
 		}
 		log.VWarningf(ctx, 1, "not planning on node %d", sqlInstance)
+		log.Infof(ctx, "not planning on this node")
 		return dsp.gatewaySQLInstanceID, SpanPartitionReason_GATEWAY_TARGET_UNHEALTHY
 	}
 }
@@ -1679,7 +1689,7 @@ func (dsp *DistSQLPlanner) filterUnhealthyInstances(
 	for _, n := range instances {
 		// Gateway is always considered healthy
 		if n.InstanceID == dsp.gatewaySQLInstanceID ||
-			dsp.checkInstanceHealth(n.InstanceID, n.InstanceRPCAddr, nodeStatusesCache) == NodeOK {
+			dsp.checkInstanceHealth(context.Background(), n.InstanceID, n.InstanceRPCAddr, nodeStatusesCache) == NodeOK {
 			instances[j] = n
 			j++
 		} else {
